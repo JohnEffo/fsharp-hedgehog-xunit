@@ -1,4 +1,5 @@
 ﻿using System.Collections.ObjectModel;
+using FluentAssertions;
 using Hedgehog.Linq;
 
 
@@ -6,8 +7,6 @@ namespace Hedgehog.Xunit.Examples.CSharp.WebJourney;
 
 public class GenRandomJourney : GenAttribute<List<JourneyAction>>
 {
-    public bool UseManualShrink { get; set; }
-
     private static Gen<JourneyAction> AddItemGen =>
         from item in Standard.GenItem
         let action = new JourneyAction.AddItem(item)
@@ -32,32 +31,15 @@ public class GenRandomJourney : GenAttribute<List<JourneyAction>>
         from action in Linq.Gen.FromValue(new JourneyAction.CreateOrder())
         select (JourneyAction)action;
 
-
-    private static readonly Gen<List<JourneyAction>> gen = Linq.Gen.Choice(new Collection<Gen<JourneyAction>>
-    {
-        CompleteOrderGen,
-        AddPaymentDetailsGen,
-        AddAddressGen,
-        ReduceItemGen,
-        AddItemGen
-    }).List(Linq.Range.Constant(100, 400));
-
     public override Gen<List<JourneyAction>> Generator
-        => UseManualShrink
-            ? gen.ShrinkLazy(PerformShrink)
-            : gen;
-
-    private IEnumerable<List<JourneyAction>> PerformShrink(
-        List<JourneyAction> arg)
-    {
-        for (var i = 0; i < arg.Count; i++)
+        => Linq.Gen.Choice(new Collection<Gen<JourneyAction>>
         {
-            var head = arg.GetRange(0, i);
-            var tail = i < arg.Count ? arg.GetRange(i + 1, arg.Count - head.Count - 1) : new List<JourneyAction>();
-            head.AddRange(tail);
-            yield return head;
-        }
-    }
+            CompleteOrderGen,
+            AddPaymentDetailsGen,
+            AddAddressGen,
+            ReduceItemGen,
+            AddItemGen
+        }).List(Linq.Range.LinearInt32(0, 400)).Resize(150);
 
 }
 
@@ -78,20 +60,19 @@ public abstract record JourneyAction
 
     public record CreateOrder() : JourneyAction;
 
-    public (Basket, Model) PerformAction(
+    public ActionResult PerformAction(
         BasketService service,
-        Basket basket,
-        Model model)
+        ActionResult pre)
         => this switch
         {
-            AddItem { Item: var item } => (service.AddItem(basket, item), model.AddItem(item)),
-            ReduceItem reduction => PerformReduceItem(reduction, service, (Basket.WithItems)basket, model),
-            AddAddress { Address: var address } => (service.AddAddress((Basket.WithItems)basket, address), model with { HasAddress = true }),
-            AddPaymentDetails { PaymentDetails: var payment } => (service.AddPaymentDetails((Basket.WithAddress)basket, payment), model with { HasPaymentDetails = true }),
-            CreateOrder => (service.MakeOrder((Basket.WithPaymentDetails)basket), model with { OrderCreated = true }),
+            AddItem { Item: var item } => new ActionResult(service.AddItem(pre.Basket, item),pre.Model.AddItem(item)),
+            ReduceItem reduction => PerformReduceItem(reduction, service, (Basket.WithItems)pre.Basket, pre.Model),
+            AddAddress { Address: var address } =>new ActionResult (service.AddAddress((Basket.WithItems)pre.Basket, address), pre.Model with { HasAddress = true }),
+            AddPaymentDetails { PaymentDetails: var payment } =>new ActionResult (service.AddPaymentDetails((Basket.WithAddress)pre.Basket, payment), pre.Model with { HasPaymentDetails = true }),
+            CreateOrder =>new ActionResult (service.MakeOrder((Basket.WithPaymentDetails)pre.Basket), pre.Model with { OrderCreated = true }),
         };
 
-    private static (Basket, Model) PerformReduceItem(
+    private static ActionResult PerformReduceItem(
         ReduceItem reduction,
         BasketService service,
         Basket.WithItems basket,
@@ -101,8 +82,36 @@ public abstract record JourneyAction
         var item = basket.Items[itemIndex];
         var reductionAmount = reduction.ItemAmount % item.Quantity + 1;
         var reductionItem = item with { Quantity = reductionAmount };
-        return (service.ReduceItemCount(basket, reductionItem),
+        return new ActionResult(service.ReduceItemCount(basket, reductionItem),
             model.ReduceItemCount(reductionItem.SKU, reductionItem.Quantity));
+    }
+}
+
+public record ActionResult(
+    Basket Basket,
+    Model Model)
+{
+    public static ActionResult Empty() => new ActionResult(
+        new Basket.Empty(),
+        new Model(new Dictionary<string, int>(), false, false, false));
+
+    public  void Validate()
+    {
+      
+        if (Basket is Basket.Empty)
+        {
+            this.Model.Items.Should().BeEmpty("basket empty so model should be ");
+        }
+
+        if (Basket is Basket.WithItems { Items: var items })
+        {
+            items.ToDictionary(i => i.SKU, v => v.Quantity)
+                .Should().BeEquivalentTo(Model.Items, "the model items list empty so basket items list should be");
+        }
+
+        (Basket is Basket.WithAddress).Should().Be(Model.HasAddress);
+        (Basket is Basket.WithPaymentDetails).Should().Be(Model.HasPaymentDetails);
+        (Basket is Basket.Order).Should().Be(Model.OrderCreated);
     }
 }
 
@@ -110,61 +119,31 @@ public class Test
 {
 
     [Property(200)]
-    public void XUnitAutomaticShrink(
-        [GenRandomJourney] List<JourneyAction> action)
+    public void TestJourney(
+        [GenRandomJourney] List<JourneyAction> journey)
     {
-        CheckList(action);
+        CheckJourneyDiscountingInvalidTransitions(journey);
     }
 
-    [Property(200)]
-    public void XUnitManualShrink(
-        [GenRandomJourney(UseManualShrink = true)] List<JourneyAction> action)
+    private void CheckJourneyDiscountingInvalidTransitions(
+        List<JourneyAction> journey)
     {
-        CheckList(action);
-    }
-
-
-
-    [Fact]
-    public void Check_old_Style_Manual()
-    {
-        var prop = from data in Linq.Property.ForAll(new GenRandomJourney { UseManualShrink = true }.Generator)
-                   select CheckList(data);
-
-        prop.Check();
-    }
-
-    [Fact]
-    public void Check_old_Style_Auto()
-    {
-        var prop = from data in Linq.Property.ForAll(new GenRandomJourney().Generator)
-                   select CheckList(data);
-
-        prop.Check();
-    }
-
-    private void CheckList(
-        List<JourneyAction> action)
-    {
-        var model = new Model(new Dictionary<string, int>(), false, false, false);
-        Basket basket = new Basket.Empty();
+        var testState = ActionResult.Empty();
         var service = new BasketService();
-        foreach (var journeyAction in action)
+        foreach (var journeyAction in journey)
         {
-            if (IsValidActionForModel(journeyAction, model))
+            if (IsValidActionForModel(journeyAction, testState.Model))
             {
-                (basket, model) = journeyAction.PerformAction(service, basket, model);
-                (basket, model).Validate();
+                testState = journeyAction.PerformAction(service, testState);
+                testState.Validate();
             }
 
-            if (basket is Basket.Order)
+            if (testState.Basket is Basket.Order)
             {
                 break;
             }
         }
     }
-
-
 
     private bool IsValidActionForModel(
         JourneyAction journeyAction,

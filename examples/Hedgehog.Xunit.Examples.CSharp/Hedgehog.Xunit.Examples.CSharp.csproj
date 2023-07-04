@@ -27,4 +27,8 @@
     <ProjectReference Include="..\..\src\Hedgehog.Xunit\Hedgehog.Xunit.fsproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Choice\" />
+  </ItemGroup>
+
 </Project>
