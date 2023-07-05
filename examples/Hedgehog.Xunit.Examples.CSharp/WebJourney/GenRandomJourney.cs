@@ -33,13 +33,15 @@ public class GenRandomJourney : GenAttribute<List<JourneyAction>>
 
     public override Gen<List<JourneyAction>> Generator
         => Linq.Gen.Choice(new Collection<Gen<JourneyAction>>
-        {
-            CompleteOrderGen,
-            AddPaymentDetailsGen,
-            AddAddressGen,
-            ReduceItemGen,
-            AddItemGen
-        }).List(Linq.Range.LinearInt32(0, 400)).Resize(150);
+            {
+                CompleteOrderGen,
+                AddPaymentDetailsGen,
+                AddAddressGen,
+                ReduceItemGen,
+                AddItemGen
+            })
+            //.List(Linq.Range.LinearInt32(0, 400)).Resize(150);
+            .List(Linq.Range.Constant(100, 400));
 
 }
 
@@ -118,6 +120,7 @@ public record ActionResult(
 public class Test
 {
 
+    [Recheck("1_15394381673532429804_4669077780501989921_100000000000000000011100000000000000001100000000000000000000000000000100000000000000010101000000000000001010100000000000000011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")]
     [Property(200)]
     public void TestJourney(
         [GenRandomJourney] List<JourneyAction> journey)
